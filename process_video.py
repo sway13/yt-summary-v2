@@ -2,6 +2,7 @@ import sys
 import json
 import os
 import re
+import markdown
 import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi
 import llm_gateway
@@ -15,12 +16,22 @@ def load_config(config_path="themes_config.json") -> dict:
         config_path = os.path.join(script_dir, config_path)
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"Configuration file not found at themes_config.json")
-    
+
     with open(config_path, "r") as f:
         return json.load(f)
 
+def load_system_directions(path="system_directions") -> str:
+    """Loads the master system directive from the system_directions file."""
+    if not os.path.exists(path):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(script_dir, path)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"System directions file not found at: {path}")
+    with open(path, "r") as f:
+        return f.read()
+
 def extract_video_info(url: str) -> dict:
-    """Extracts video title and ID using yt-dlp."""
+    """Extracts video title, ID, uploader/channel name, and low-res thumbnail URL using yt-dlp."""
     ydl_opts = {
         'skip_download': True,
         'quiet': True,
@@ -29,9 +40,12 @@ def extract_video_info(url: str) -> dict:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
+            video_id = info.get('id')
             return {
                 'title': info.get('title'),
-                'id': info.get('id'),
+                'id': video_id,
+                # 'uploader' is the channel/creator name on YouTube
+                'uploader': info.get('uploader') or info.get('channel') or '[DATA NOT PROVIDED]',
             }
         except Exception as e:
             raise RuntimeError(f"Failed to extract video details using yt-dlp: {e}")
@@ -72,145 +86,201 @@ def check_title_for_ignore(title: str, ignore_keywords: list) -> bool:
             return True
     return False
 
-def build_system_prompt(config: dict) -> str:
-    """Constructs the system prompt instructing the LLM on classification, filtering, and theme styling."""
-    ignore_keywords = config.get("ignore_keywords", [])
-    themes = config.get("themes", {})
-    default_theme_instructions = config.get("default_theme", "Provide a standard structured summary.")
-    
-    themes_str = ""
-    for category, instruction in themes.items():
-        themes_str += f"- Theme: {category}\n  Instructions: {instruction}\n"
-        
-    system_prompt = f"""You are an expert video content classifier and summarizer.
+def build_system_prompt(config: dict, system_directions: str) -> str:
+    """
+    Constructs the master system prompt by embedding the system_directions file verbatim,
+    then appending the valid category tags so the LLM knows exactly which keys to use.
+    """
+    tracks = config.get("tracks", {})
+    valid_tags = list(tracks.keys())
 
-1. CRITICAL FILTERING STEP:
-Check if the transcript discusses leisure/entertainment topics, including: {', '.join(ignore_keywords)}.
-If the video matches any of these ignore categories, you MUST reply with EXACTLY the single word: IGNORE
-Do not add any explanations, markdown, or punctuation. Just reply 'IGNORE'.
+    system_prompt = f"""{system_directions}
 
-2. SUMMARIZATION & FORMATTING:
-If the video is NOT a leisure video, classify it into one of these themes and follow the specific instructions:
-{themes_str}
-If the video does not fit any specific theme listed above, summarize it according to these instructions:
-{default_theme_instructions}
+---
+CATEGORY TAG CONSTRAINT:
+The "category" field in your JSON output must be exactly one of the following lowercase keys
+(these map directly to your target Apple Notes folders): {', '.join(valid_tags)}
 
-Rules for Summarization:
-- Start directly with the summary content. Do NOT prefix with "Here is the summary" or other introductory text.
-- Use standard HTML tags (such as <h2>, <h3>, <p>, <ul>, <li>, <strong>, <em>, <br>) for formatting.
-- Do NOT use markdown syntax (like #, ##, **, -, *) in the summary text. Write only clean HTML so it displays properly in Apple Notes.
+If the content does not clearly match any single track, choose the closest one from the list above.
+Do NOT invent new category names.
 """
     return system_prompt
 
-def convert_markdown_to_html(text: str) -> str:
+def parse_llm_response(response: str, valid_tracks: list) -> tuple:
     """
-    Fallback converter to turn basic markdown patterns into HTML
-    in case the LLM neglects the prompt instruction to write HTML.
+    Parses the JSON LLM response into a (track_tag, reporting_title, summary_markdown) tuple.
+
+    The system_directions mandate JSON with three keys:
+      - "category"         : one of the valid track tags
+      - "reporting_title"  : a compressed, journalistic note title
+      - "summary_markdown" : the structured body content
+
+    Extraction strategy: locate the first '{' and last '}' in the raw response and
+    slice between them. This is immune to markdown fences, stray whitespace, the word
+    'json', or any other wrapping a model might emit — regardless of response_mime_type.
     """
-    # Check if text already has HTML headings/paragraphs; if so, skip conversion.
-    if "<h" in text or "<p>" in text or "<li>" in text:
-        return text
-        
-    # Convert bold **text** to <strong>text</strong>
-    text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
-    # Convert italic *text* to <em>text</em>
-    text = re.sub(r'\*(.*?)\*', r'<em>\1</em>', text)
-    # Convert headers
-    text = re.sub(r'^### (.*?)$', r'<h3>\1</h3>', text, flags=re.MULTILINE)
-    text = re.sub(r'^## (.*?)$', r'<h2>\1</h2>', text, flags=re.MULTILINE)
-    text = re.sub(r'^# (.*?)$', r'<h1>\1</h1>', text, flags=re.MULTILINE)
-    # Convert bullet points
-    text = re.sub(r'^[-*] (.*?)$', r'<li>\1</li>', text, flags=re.MULTILINE)
+    raw = response.strip()
+
+    # --- Bulletproof JSON extraction ---
+    start = raw.find('{')
+    end = raw.rfind('}')
+
+    if start == -1 or end == -1 or end < start:
+        print(f"WARNING: Could not locate a JSON object in the LLM response.")
+        print(f"         Full raw response:\n{raw}")
+        return "Uncategorized", "Untitled Summary", raw
+
+    json_str = raw[start:end + 1]
+
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(f"WARNING: Extracted JSON string failed to parse. Error: {e}")
+        print(f"         Extracted slice:\n{json_str[:500]}")
+        print(f"         Full raw response:\n{raw}")
+        return "Uncategorized", "Untitled Summary", raw
+
+    # --- Strict variable mapping from the three mandated keys ---
+    # Safe string extraction to prevent AttributeError if the LLM hallucinates nested objects
+    raw_category = data.get("category", "")
+    category = str(raw_category).strip().lower() if raw_category else ""
+
+    raw_title = data.get("reporting_title", "Untitled Summary")
+    reporting_title = str(raw_title).strip() if raw_title else "Untitled Summary"
+
+    raw_summary = data.get("summary_markdown", "")
     
-    # Process lines to structure paragraphs and list wrappers
-    lines = text.split('\n')
-    formatted_lines = []
-    in_list = False
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            if in_list:
-                formatted_lines.append("</ul>")
-                in_list = False
-            continue
-            
-        if line.startswith("<li>"):
-            if not in_list:
-                formatted_lines.append("<ul>")
-                in_list = True
-            formatted_lines.append(line)
-        elif line.startswith("<h"):
-            if in_list:
-                formatted_lines.append("</ul>")
-                in_list = False
-            formatted_lines.append(line)
-        else:
-            if in_list:
-                formatted_lines.append("</ul>")
-                in_list = False
-            formatted_lines.append(f"<p>{line}</p>")
-            
-    if in_list:
-        formatted_lines.append("</ul>")
-        
-    return "\n".join(formatted_lines)
+    # 2. Implement Python Type-Checking & Failsafe Flattening
+    if isinstance(raw_summary, dict):
+        # Flatten the dictionary hallucination by joining values
+        summary_markdown = "\n\n".join(str(v) for v in raw_summary.values()).strip()
+    elif isinstance(raw_summary, str):
+        # 3. Safe String Execution
+        summary_markdown = raw_summary.strip()
+    else:
+        # Fallback for lists or other types
+        summary_markdown = str(raw_summary).strip()
+
+    if not reporting_title:
+        reporting_title = "Untitled Summary"
+    if not summary_markdown:
+        summary_markdown = "[DATA NOT PROVIDED]"
+
+    if category not in valid_tracks:
+        print(f"WARNING: LLM returned unrecognised category '{category}'.")
+        print(f"         Routing note to 'Uncategorized' folder for manual review.")
+        category = "Uncategorized"
+
+    return category, reporting_title, summary_markdown
+
 
 def main():
     if len(sys.argv) < 2:
         print("Error: Missing YouTube URL argument.", file=sys.stderr)
         print("Usage: python process_video.py <youtube_url>", file=sys.stderr)
         sys.exit(1)
-        
+
     url = sys.argv[1]
-    
+
     try:
-        # 1. Load config
+        # 1. Load config and master system directive
         config = load_config()
-        ignore_keywords = config.get("ignore_keywords", [])
-        
-        # 2. Extract metadata
+        system_directions = load_system_directions()
+        tracks = config.get("tracks", {})
+        global_exclusions = config.get("global_exclusions", [])
+        valid_tracks = list(tracks.keys())
+
+        # 2. Extract metadata — title, video ID, creator, and thumbnail URL
         print(f"Fetching video info for: {url}")
         video_info = extract_video_info(url)
-        title = video_info['title']
-        video_id = video_info['id']
-        print(f"Video Title: {title}")
-        
-        # 3. Local Title Keyword Check
-        if check_title_for_ignore(title, ignore_keywords):
-            print("TERMINATION: Video title matches leisure keyword. Ignoring.")
+        yt_title       = video_info['title']
+        video_id       = video_info['id']
+        uploader       = video_info['uploader']
+        print(f"Video Title: {yt_title}")
+        print(f"Creator:     {uploader}")
+
+        # 3. PRE-FILTER: Kill execution immediately if title matches a global exclusion
+        if check_title_for_ignore(yt_title, global_exclusions):
+            print("TERMINATION: Video title matches a global exclusion keyword. Ignoring.")
             sys.exit(0)
-            
+
         # 4. Fetch transcript
         print("Retrieving video transcript...")
         transcript = get_transcript(video_id)
-        
-        # 5. Get summary from LLM
-        print("Sending to LLM Gateway for categorization and summarization...")
-        system_prompt = build_system_prompt(config)
-        summary_result = llm_gateway.generate_summary(transcript, system_prompt)
-        
-        # 6. LLM Ignore Check
-        if summary_result.strip().upper() == "IGNORE":
-            print("TERMINATION: LLM categorized this video as a leisure topic. Ignoring.")
-            sys.exit(0)
-            
-        # 7. Convert formatting if LLM generated markdown
-        summary_html = convert_markdown_to_html(summary_result)
-        
-        # 8. Apple Notes Integration
-        folder_name = config.get("apple_notes_folder", "YouTube Summaries")
+
+        # 5. LLM CLASSIFICATION: Gemini follows system_directions and returns JSON
+        #    with keys: category, reporting_title, summary_markdown
+        print("Sending to LLM Gateway for classification and summarization...")
+        system_prompt = build_system_prompt(config, system_directions)
+        llm_response = llm_gateway.generate_summary(transcript, system_prompt)
+
+        # 6. Parse JSON response — strict variable mapping from the three mandated keys
+        #    Output variables: category (as track_tag), reporting_title, summary_markdown
+        track_tag, reporting_title, summary_markdown = parse_llm_response(llm_response, valid_tracks)
+        print(f"LLM classified video under track: '{track_tag}'")
+        print(f"Reporting title: {reporting_title}")
+
+        # --- DATA DICTIONARY GUARDS: fail loudly if a master variable is missing ---
+        if not isinstance(reporting_title, str) or not reporting_title:
+            raise ValueError("ERROR: reporting_title variable is missing or not a string")
+        if not isinstance(track_tag, str) or not track_tag:
+            raise ValueError("ERROR: category (track_tag) variable is missing or not a string")
+        if not isinstance(summary_markdown, str) or not summary_markdown:
+            raise ValueError("ERROR: summary_markdown variable is missing or not a string")
+
+        # 7. VARIABLE LIFECYCLE — Extract → Convert → strict name: html_summary
+        #    Uses the standard 'markdown' library: handles ###, **, *, bullet points natively.
+        #    No custom regex scrubbing — the library produces clean, correct HTML.
+        html_summary = markdown.markdown(
+            summary_markdown,
+            extensions=['extra'],   # enables tables, fenced code, definition lists, etc.
+        )
+
+        if not isinstance(html_summary, str) or not html_summary:
+            raise ValueError("ERROR: html_summary variable is missing or not a string after conversion")
+
+        # 9. APPLESCRIPT HANDOFF: Resolve folder from track config.
+        #    Falls back to 'Uncategorized' if the LLM returned an unknown category.
+        if track_tag in tracks:
+            folder_name = tracks[track_tag]["target_apple_notes_folder"]
+        else:
+            folder_name = "Uncategorized"
+            print(f"Note: No folder mapping found for '{track_tag}'. Routing to '{folder_name}'.")
         print(f"Ensuring folder '{folder_name}' exists in Apple Notes...")
         notes_integration.ensure_folder(folder_name)
-        
+
+        # 10. Final assembly and note creation — each variable is named and guarded
         print("Creating note in Apple Notes...")
-        notes_integration.create_note(title, folder_name, url, summary_html)
-        
-        print(f"SUCCESS: Note '{title}' successfully added to folder '{folder_name}'.")
-        
+        try:
+            notes_integration.create_note(
+                reporting_title=reporting_title,
+                folder=folder_name,
+                video_url=url,
+                original_title=yt_title,
+                author=uploader,
+                html_summary=html_summary,
+            )
+        except TypeError as te:
+            # A TypeError here means a keyword argument name mismatch — name it explicitly
+            missing = str(te)
+            if "reporting_title" in missing:
+                print("ERROR: reporting_title variable not found in create_note call", file=sys.stderr)
+            elif "html_summary" in missing:
+                print("ERROR: html_summary variable not found in create_note call", file=sys.stderr)
+            elif "original_title" in missing:
+                print("ERROR: original_title variable not found in create_note call", file=sys.stderr)
+            elif "author" in missing:
+                print("ERROR: author variable not found in create_note call", file=sys.stderr)
+            else:
+                print(f"ERROR: create_note call failed with argument error: {te}", file=sys.stderr)
+            raise
+
+        print(f"SUCCESS: Note '{reporting_title}' successfully added to folder '{folder_name}'.")
+
     except Exception as e:
         print(f"ERROR: Pipeline execution failed: {e}", file=sys.stderr)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
