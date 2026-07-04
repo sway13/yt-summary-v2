@@ -67,6 +67,6 @@ To create an on-demand shortcut:
 3. Select shell: `/bin/bash`.
 4. Configure the command:
    ```bash
-   /Users/shreypadhi/Software/yt-summary-v2/shortcut_wrapper.sh "$1"
+   ~/Software/yt-summary-v2/shortcut_wrapper.sh "$1"
    ```
 5. You can trigger this shortcut via Quick Actions, Services menu, or a custom keyboard shortcut.
