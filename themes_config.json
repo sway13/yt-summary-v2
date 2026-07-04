@@ -1,0 +1,21 @@
+{
+  "ignore_keywords": [
+    "cricket",
+    "formula 1",
+    "f1",
+    "football",
+    "soccer",
+    "sitcom",
+    "sitcoms",
+    "gaming",
+    "video games",
+    "basketball",
+    "tennis"
+  ],
+  "themes": {
+    "cooking": "Output a structured summary with headings. Highlight ingredients, step-by-step instructions, and key techniques.",
+    "lifestyle": "Output a cozy, narrative summary focusing on lifestyle tips, routines, and overall message.",
+    "geopolitics": "Output a highly structured, essay-style report analyzing the historical context, major actors, and future implications."
+  },
+  "default_theme": "Output a structured summary containing main points, key takeaways, and a brief conclusion."
+}
