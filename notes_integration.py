@@ -81,9 +81,11 @@ def create_note(
         f"{html_summary}"
     )
 
-    # Sanitize real newlines → <br> BEFORE AppleScript escaping.
-    # This prevents literal '\n' from appearing in the note body.
-    body_html = body_html.replace("\r\n", "<br>").replace("\r", "<br>").replace("\n", "<br>")
+    # NOTE: Do NOT convert \n to <br> here.
+    # markdown.markdown() already produces correct block-level HTML (<h3>, <p>, <ul>, <li>).
+    # Apple Notes renders these block elements with correct visual line breaks natively.
+    # Replacing \n with <br> across the entire HTML string destroys the block structure
+    # and produces nested bullet corruption and flattened headers.
 
     escaped_folder = escape_applescript_string(folder)
     escaped_body   = escape_applescript_string(body_html)

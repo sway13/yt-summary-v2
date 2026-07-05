@@ -63,18 +63,36 @@ def generate_summary(transcript: str, system_prompt: str) -> str:
     if match:
         # group(0) begins with '{' and ends with '}' — perfectly isolated.
         isolated_json = match.group(0).strip()
-        
-        # 1. The Pre-Parse JSON Sanitizer
-        # Uses Regex to locate all literal newline characters (\n and \r) that exist 
-        # inside JSON string values (handling escaped quotes), and escapes them to \\n.
-        pattern = r'"([^"\\]*(?:\\.[^"\\]*)*)"'
-        def escape_literal_newlines(m):
-            inner_string = m.group(1)
-            escaped_string = inner_string.replace('\n', '\\n').replace('\r', '\\r')
-            return f'"{escaped_string}"'
-            
-        sanitized_json = re.sub(pattern, escape_literal_newlines, isolated_json)
+
+        # Pre-Parse JSON Sanitizer — state-machine approach.
+        # Walks the string char-by-char and escapes bare newlines/carriage returns
+        # ONLY when the cursor is inside a JSON string value.
+        # A regex-based approach fails here because [^"\\]* does not match across
+        # real newlines by default in Python — so multi-line string values are never
+        # fully sanitized, leaving bare newlines that break json.loads().
+        result = []
+        in_string = False
+        escape_next = False
+        for ch in isolated_json:
+            if escape_next:
+                result.append(ch)
+                escape_next = False
+            elif ch == '\\' and in_string:
+                result.append(ch)
+                escape_next = True
+            elif ch == '"':
+                in_string = not in_string
+                result.append(ch)
+            elif in_string and ch == '\n':
+                result.append('\\n')
+            elif in_string and ch == '\r':
+                result.append('\\r')
+            else:
+                result.append(ch)
+
+        sanitized_json = ''.join(result)
         return sanitized_json
+
     
     return raw
 
