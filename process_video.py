@@ -128,7 +128,9 @@ def parse_llm_response(response: str, valid_tracks: list) -> tuple:
     if start == -1 or end == -1 or end < start:
         print(f"WARNING: Could not locate a JSON object in the LLM response.")
         print(f"         Full raw response:\n{raw}")
-        return "Uncategorized", "Untitled Summary", raw
+        # Normalise literal \n sequences before returning so the fallback text
+        # is still parseable by the markdown library downstream.
+        return "Uncategorized", "Untitled Summary", raw.replace('\\n', '\n')
 
     json_str = raw[start:end + 1]
 
@@ -138,7 +140,9 @@ def parse_llm_response(response: str, valid_tracks: list) -> tuple:
         print(f"WARNING: Extracted JSON string failed to parse. Error: {e}")
         print(f"         Extracted slice:\n{json_str[:500]}")
         print(f"         Full raw response:\n{raw}")
-        return "Uncategorized", "Untitled Summary", raw
+        # Normalise literal \n sequences before returning so the fallback text
+        # is still parseable by the markdown library downstream.
+        return "Uncategorized", "Untitled Summary", raw.replace('\\n', '\n')
 
     # --- Strict variable mapping from the three mandated keys ---
     # Safe string extraction to prevent AttributeError if the LLM hallucinates nested objects
@@ -149,17 +153,23 @@ def parse_llm_response(response: str, valid_tracks: list) -> tuple:
     reporting_title = str(raw_title).strip() if raw_title else "Untitled Summary"
 
     raw_summary = data.get("summary_markdown", "")
-    
-    # 2. Implement Python Type-Checking & Failsafe Flattening
+
+    # Type-Checking & Failsafe Flattening
     if isinstance(raw_summary, dict):
         # Flatten the dictionary hallucination by joining values
         summary_markdown = "\n\n".join(str(v) for v in raw_summary.values()).strip()
     elif isinstance(raw_summary, str):
-        # 3. Safe String Execution
         summary_markdown = raw_summary.strip()
     else:
-        # Fallback for lists or other types
+        # Fallback for lists or other unexpected types
         summary_markdown = str(raw_summary).strip()
+
+    # CRITICAL: Normalise any remaining literal '\n' two-character sequences into
+    # real newlines. JSON encoding represents newlines as \n inside string values;
+    # if the LLM embeds them as literals or the JSON parser leaves them as-is in
+    # edge cases, the markdown library will see '### Header' on one giant line and
+    # produce no HTML — causing raw markdown characters to appear in the note.
+    summary_markdown = summary_markdown.replace('\\n', '\n')
 
     if not reporting_title:
         reporting_title = "Untitled Summary"
