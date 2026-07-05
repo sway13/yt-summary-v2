@@ -159,17 +159,17 @@ def parse_llm_response(response: str, valid_tracks: list) -> tuple:
     raw = response.strip()
 
     # --- Bulletproof JSON extraction ---
-    start = raw.find('{')
-    end = raw.rfind('}')
-
-    if start == -1 or end == -1 or end < start:
+    import re
+    match = re.search(r'\{.*\}', raw, re.DOTALL)
+    
+    if not match:
         print(f"WARNING: Could not locate a JSON object in the LLM response.")
         print(f"         Full raw response:\n{raw}")
         # Normalise literal \n sequences before returning so the fallback text
         # is still parseable by the markdown library downstream.
         return "Uncategorized", "Untitled Summary", raw.replace('\\n', '\n')
 
-    json_str = raw[start:end + 1]
+    json_str = match.group(0).strip()
 
     try:
         data = json.loads(json_str)

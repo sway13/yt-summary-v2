@@ -1,4 +1,5 @@
 import os
+import re
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -49,5 +50,13 @@ def generate_summary(transcript: str, system_prompt: str) -> str:
 
     raw = response.text.strip()
     print(f"[llm_gateway] Raw API response (first 300 chars): {raw[:300]}")
+
+    # Surgical Extraction: Isolate the JSON dictionary from any surrounding markdown or prose
+    match = re.search(r'\{.*\}', raw, re.DOTALL)
+    if match:
+        # group(0) begins with '{' and ends with '}' — perfectly isolated.
+        isolated_json = match.group(0).strip()
+        return isolated_json
+    
     return raw
 
