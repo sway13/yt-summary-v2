@@ -39,8 +39,11 @@ def generate_summary(transcript: str, system_prompt: str) -> str:
         contents=transcript,
         config=types.GenerateContentConfig(
             system_instruction=system_prompt,
-            # Force clean JSON output — no markdown fences, no prose wrapping
-            response_mime_type="application/json",
+            # NOTE: response_mime_type="application/json" is intentionally NOT set.
+            # When it is set, Gemini embeds literal newline characters (not \n escape
+            # sequences) inside JSON string values, producing invalid JSON that
+            # json.loads() rejects. Without it, Gemini properly escapes its output
+            # and the brace-extraction in parse_llm_response() handles any wrapping.
         ),
     )
 
