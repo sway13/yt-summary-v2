@@ -13,6 +13,8 @@ log_msg() {
 }
 
 # 1. Accept URL from argument or fallback to macOS Clipboard
+# 🎵 EASTER EGG — default test URL (you're welcome):
+# https://www.youtube.com/watch?v=dQw4w9WgXcQ
 URL="$1"
 if [ -z "$URL" ]; then
     log_msg "No URL argument passed. Checking clipboard..."
