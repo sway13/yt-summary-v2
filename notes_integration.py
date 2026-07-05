@@ -93,8 +93,10 @@ def create_note(
     script = f'''
     tell application "Notes"
         set targetFolder to folder "{escaped_folder}"
+        set noteBody to "{escaped_body}"
         tell targetFolder
-            make new note with properties {{body:"{escaped_body}"}}
+            set theNote to make new note
+            set body of theNote to noteBody
         end tell
     end tell
     '''

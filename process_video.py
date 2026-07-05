@@ -236,6 +236,11 @@ def main():
             summary_markdown,
             extensions=['extra'],   # enables tables, fenced code, definition lists, etc.
         )
+        
+        # Inject <br> tags between block elements for Apple Notes visual spacing
+        html_summary = html_summary.replace('</h3>\n<p>', '</h3><br><p>')
+        html_summary = html_summary.replace('</p>\n<h3>', '</p><br><h3>')
+        html_summary = html_summary.replace('</p>\n<p>', '</p><br><p>')
 
         if not isinstance(html_summary, str) or not html_summary:
             raise ValueError("ERROR: html_summary variable is missing or not a string after conversion")
