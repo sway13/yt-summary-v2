@@ -35,11 +35,18 @@ def generate_summary(transcript: str, system_prompt: str) -> str:
     if model_name.startswith("models/"):
         model_name = model_name[len("models/"):]
 
+    # Inject strict formatting constraints exactly as written per audit requirements
+    rules_path = os.path.join(os.path.dirname(__file__), "formatting_rules", "FORMATTING_RULES.md")
+    with open(rules_path, "r") as f:
+        formatting_rules = f.read()
+    
+    final_system_prompt = f"{system_prompt}\n\n---\n{formatting_rules}"
+
     response = client.models.generate_content(
         model=model_name,
         contents=transcript,
         config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
+            system_instruction=final_system_prompt,
             # NOTE: response_mime_type="application/json" is intentionally NOT set.
             # When it is set, Gemini embeds literal newline characters (not \n escape
             # sequences) inside JSON string values, producing invalid JSON that
