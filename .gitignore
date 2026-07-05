@@ -15,3 +15,6 @@ __pycache__/
 
 # OS generated files
 .DS_Store
+
+# Auto-generated IDE/tool artefacts
+gemini-code-*.json
