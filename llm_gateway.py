@@ -63,7 +63,18 @@ def generate_summary(transcript: str, system_prompt: str) -> str:
     if match:
         # group(0) begins with '{' and ends with '}' — perfectly isolated.
         isolated_json = match.group(0).strip()
-        return isolated_json
+        
+        # 1. The Pre-Parse JSON Sanitizer
+        # Uses Regex to locate all literal newline characters (\n and \r) that exist 
+        # inside JSON string values (handling escaped quotes), and escapes them to \\n.
+        pattern = r'"([^"\\]*(?:\\.[^"\\]*)*)"'
+        def escape_literal_newlines(m):
+            inner_string = m.group(1)
+            escaped_string = inner_string.replace('\n', '\\n').replace('\r', '\\r')
+            return f'"{escaped_string}"'
+            
+        sanitized_json = re.sub(pattern, escape_literal_newlines, isolated_json)
+        return sanitized_json
     
     return raw
 

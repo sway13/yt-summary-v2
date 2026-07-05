@@ -106,43 +106,6 @@ Do NOT invent new category names.
 """
     return system_prompt
 
-def _repair_json_newlines(json_str: str) -> str:
-    """
-    Repairs JSON strings that contain unescaped control characters inside string
-    values (the most common Gemini hallucination even with response_mime_type set).
-
-    Uses a simple state machine to track whether the parser is inside a
-    double-quoted string, and only escapes newlines/tabs/carriage-returns there.
-    Structural whitespace between JSON tokens is left untouched so that
-    json.loads() can still parse the key/value structure correctly.
-    """
-    result = []
-    in_string = False
-    escape_next = False
-
-    for ch in json_str:
-        if escape_next:
-            # The previous character was a backslash — pass this char through as-is
-            result.append(ch)
-            escape_next = False
-        elif ch == '\\' and in_string:
-            result.append(ch)
-            escape_next = True
-        elif ch == '"':
-            in_string = not in_string
-            result.append(ch)
-        elif in_string and ch == '\n':
-            result.append('\\n')   # escape the bare newline
-        elif in_string and ch == '\r':
-            result.append('\\r')
-        elif in_string and ch == '\t':
-            result.append('\\t')
-        else:
-            result.append(ch)
-
-    return ''.join(result)
-
-
 def parse_llm_response(response: str, valid_tracks: list) -> tuple:
     """
     Parses the JSON LLM response into a (track_tag, reporting_title, summary_markdown) tuple.
@@ -174,16 +137,10 @@ def parse_llm_response(response: str, valid_tracks: list) -> tuple:
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError as e:
-        print(f"WARNING: First JSON parse attempt failed ({e}). Attempting state-machine repair...")
-        try:
-            repaired = _repair_json_newlines(json_str)
-            data = json.loads(repaired)
-            print("JSON repair successful — unescaped control characters were fixed.")
-        except json.JSONDecodeError as e2:
-            print(f"WARNING: JSON repair also failed. Error: {e2}")
-            print(f"         Extracted slice:\n{json_str[:500]}")
-            print(f"         Full raw response:\n{raw}")
-            return "Uncategorized", "Untitled Summary", raw.replace('\\n', '\n')
+        print(f"WARNING: JSON parsing failed. Error: {e}")
+        print(f"         Extracted slice:\n{json_str[:500]}")
+        print(f"         Full raw response:\n{raw}")
+        return "Uncategorized", "Untitled Summary", raw.replace('\\n', '\n')
 
     # --- Strict variable mapping from the three mandated keys ---
     # Safe string extraction to prevent AttributeError if the LLM hallucinates nested objects
@@ -211,6 +168,14 @@ def parse_llm_response(response: str, valid_tracks: list) -> tuple:
     # edge cases, the markdown library will see '### Header' on one giant line and
     # produce no HTML — causing raw markdown characters to appear in the note.
     summary_markdown = summary_markdown.replace('\\n', '\n')
+
+    # --- 2. The Markdown Enforcer (Hardened Python String Manipulation) ---
+    # Strip sub-bullets or nested list markers and force standard non-indented flat bullets
+    summary_markdown = re.sub(r'^[ \t]*[o\-\*][ \t]+', '- ', summary_markdown, flags=re.MULTILINE)
+    
+    # Ensure any headers (###) have a blank line above and below them
+    summary_markdown = re.sub(r'([^\n])\n(###\s)', r'\1\n\n\2', summary_markdown)
+    summary_markdown = re.sub(r'(###[^\n]+)\n([^\n])', r'\1\n\n\2', summary_markdown)
 
     if not reporting_title:
         reporting_title = "Untitled Summary"
