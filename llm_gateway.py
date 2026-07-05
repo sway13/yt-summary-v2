@@ -1,5 +1,4 @@
 import os
-import re
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -58,41 +57,8 @@ def generate_summary(transcript: str, system_prompt: str) -> str:
     raw = response.text.strip()
     print(f"[llm_gateway] Raw API response (first 300 chars): {raw[:300]}")
 
-    # Surgical Extraction: Isolate the JSON dictionary from any surrounding markdown or prose
-    match = re.search(r'\{.*\}', raw, re.DOTALL)
-    if match:
-        # group(0) begins with '{' and ends with '}' — perfectly isolated.
-        isolated_json = match.group(0).strip()
-
-        # Pre-Parse JSON Sanitizer — state-machine approach.
-        # Walks the string char-by-char and escapes bare newlines/carriage returns
-        # ONLY when the cursor is inside a JSON string value.
-        # A regex-based approach fails here because [^"\\]* does not match across
-        # real newlines by default in Python — so multi-line string values are never
-        # fully sanitized, leaving bare newlines that break json.loads().
-        result = []
-        in_string = False
-        escape_next = False
-        for ch in isolated_json:
-            if escape_next:
-                result.append(ch)
-                escape_next = False
-            elif ch == '\\' and in_string:
-                result.append(ch)
-                escape_next = True
-            elif ch == '"':
-                in_string = not in_string
-                result.append(ch)
-            elif in_string and ch == '\n':
-                result.append('\\n')
-            elif in_string and ch == '\r':
-                result.append('\\r')
-            else:
-                result.append(ch)
-
-        sanitized_json = ''.join(result)
-        return sanitized_json
-
-    
+    # Return the raw string as-is. json-repair in parse_llm_response() handles all
+    # malformed JSON cleanup: markdown fences, bare newlines, unescaped quotes, etc.
     return raw
+
 

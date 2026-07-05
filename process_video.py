@@ -4,6 +4,7 @@ import os
 import re
 import markdown
 import yt_dlp
+from json_repair import repair_json
 from youtube_transcript_api import YouTubeTranscriptApi
 import llm_gateway
 import notes_integration
@@ -108,72 +109,56 @@ Do NOT invent new category names.
 
 def parse_llm_response(response: str, valid_tracks: list) -> tuple:
     """
-    Parses the JSON LLM response into a (track_tag, reporting_title, summary_markdown) tuple.
+    Parses the LLM response into a (track_tag, reporting_title, summary_markdown) tuple.
 
-    The system_directions mandate JSON with three keys:
-      - "category"         : one of the valid track tags
-      - "reporting_title"  : a compressed, journalistic note title
-      - "summary_markdown" : the structured body content
+    Uses json-repair to tolerate all common LLM JSON violations in a single call:
+      - Markdown code fences (```json ... ```)
+      - Bare newlines inside string values
+      - Unescaped double-quote characters inside string values
+      - Trailing commas, missing closing braces, truncated output
 
-    Extraction strategy: locate the first '{' and last '}' in the raw response and
-    slice between them. This is immune to markdown fences, stray whitespace, the word
-    'json', or any other wrapping a model might emit — regardless of response_mime_type.
+    Strict variable mapping then extracts the three mandated keys:
+      - "category"         -> track_tag (after validation)
+      - "reporting_title"  -> reporting_title
+      - "summary_markdown" -> summary_markdown
     """
     raw = response.strip()
 
-    # --- Bulletproof JSON extraction ---
-    import re
-    match = re.search(r'\{.*\}', raw, re.DOTALL)
-    
-    if not match:
-        print(f"WARNING: Could not locate a JSON object in the LLM response.")
-        print(f"         Full raw response:\n{raw}")
-        # Normalise literal \n sequences before returning so the fallback text
-        # is still parseable by the markdown library downstream.
-        return "Uncategorized", "Untitled Summary", raw.replace('\\n', '\n')
-
-    json_str = match.group(0).strip()
-
     try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        print(f"WARNING: JSON parsing failed. Error: {e}")
-        print(f"         Extracted slice:\n{json_str[:500]}")
-        print(f"         Full raw response:\n{raw}")
-        return "Uncategorized", "Untitled Summary", raw.replace('\\n', '\n')
+        # repair_json fixes all structural violations and returns a valid JSON string.
+        # json.loads then parses the clean result.
+        data = json.loads(repair_json(raw))
+    except Exception as e:
+        # repair_json is designed to never raise — if we somehow still land here,
+        # log everything and fail loudly rather than silently dumping the raw blob.
+        print(f"CRITICAL: json-repair failed unexpectedly. Error: {e}")
+        print(f"          Full raw response:\n{raw}")
+        return "Uncategorized", "Untitled Summary", "[PARSE FAILURE — see pipeline logs]"
 
-    # --- Strict variable mapping from the three mandated keys ---
-    # Safe string extraction to prevent AttributeError if the LLM hallucinates nested objects
+    # --- Strict variable mapping from the three mandated Data Dictionary keys ---
     raw_category = data.get("category", "")
     category = str(raw_category).strip().lower() if raw_category else ""
 
-    raw_title = data.get("reporting_title", "Untitled Summary")
-    reporting_title = str(raw_title).strip() if raw_title else "Untitled Summary"
+    raw_title = data.get("reporting_title", "")
+    reporting_title = str(raw_title).strip() if raw_title else ""
 
     raw_summary = data.get("summary_markdown", "")
 
-    # Type-Checking & Failsafe Flattening
+    # Type-check: guard against LLM hallucinating a dict instead of a flat string
     if isinstance(raw_summary, dict):
-        # Flatten the dictionary hallucination by joining values
         summary_markdown = "\n\n".join(str(v) for v in raw_summary.values()).strip()
     elif isinstance(raw_summary, str):
         summary_markdown = raw_summary.strip()
     else:
-        # Fallback for lists or other unexpected types
         summary_markdown = str(raw_summary).strip()
 
-    # CRITICAL: Normalise any remaining literal '\n' two-character sequences into
-    # real newlines. JSON encoding represents newlines as \n inside string values;
-    # if the LLM embeds them as literals or the JSON parser leaves them as-is in
-    # edge cases, the markdown library will see '### Header' on one giant line and
-    # produce no HTML — causing raw markdown characters to appear in the note.
+    # Normalise any remaining literal \n escape sequences into real newlines
     summary_markdown = summary_markdown.replace('\\n', '\n')
 
-    # --- 2. The Markdown Enforcer (Hardened Python String Manipulation) ---
-    # Strip sub-bullets or nested list markers and force standard non-indented flat bullets
+    # --- Markdown Enforcer: mechanical Python overrides for LLM formatting violations ---
+    # Flatten any nested/sub-bullets (o, indented -, *) to standard flat bullets
     summary_markdown = re.sub(r'^[ \t]*[o\-\*][ \t]+', '- ', summary_markdown, flags=re.MULTILINE)
-    
-    # Ensure any headers (###) have a blank line above and below them
+    # Ensure ### headers always have a blank line above and below
     summary_markdown = re.sub(r'([^\n])\n(###\s)', r'\1\n\n\2', summary_markdown)
     summary_markdown = re.sub(r'(###[^\n]+)\n([^\n])', r'\1\n\n\2', summary_markdown)
 

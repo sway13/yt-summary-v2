@@ -3,3 +3,4 @@ python-dotenv>=1.0.1
 yt-dlp>=2024.3.10
 youtube-transcript-api>=0.6.2
 markdown>=3.4.0
+json-repair>=0.61.0
