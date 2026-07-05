@@ -8,7 +8,6 @@ JSON Output Required: You must output your response in valid JSON format contain
 
 SCHEMA CONSTRAINT: The value for 'summary_markdown' MUST be a single, flat string containing raw markdown text. DO NOT create nested JSON objects, sub-keys, or dictionaries inside 'summary_markdown'.
 
-Formatting Constraints: You must use strictly flat bulleted lists. Do NOT use numbered lists. Do NOT indent text to create sub-bullets or nested lists. Every list item must be on a single, un-indented line.
 
 Sponsorship Eradication (FATAL ERROR): You must actively identify and delete all ad reads, sponsorships (e.g., Squarespace, AG1, VPNs), and promotional calls to action. If a sponsor is mentioned in the output, the system fails.
 

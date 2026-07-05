@@ -30,6 +30,16 @@ def load_system_directions(path="system_directions") -> str:
     with open(path, "r") as f:
         return f.read()
 
+def load_formatting_rules(path="formatting_rules/FORMATTING_RULES.md") -> str:
+    """Loads the strict LLM formatting constraints."""
+    if not os.path.exists(path):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(script_dir, path)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Formatting rules file not found at: {path}")
+    with open(path, "r") as f:
+        return f.read()
+
 def extract_video_info(url: str) -> dict:
     """Extracts video title, ID, uploader/channel name, and low-res thumbnail URL using yt-dlp."""
     ydl_opts = {
@@ -86,15 +96,18 @@ def check_title_for_ignore(title: str, ignore_keywords: list) -> bool:
             return True
     return False
 
-def build_system_prompt(config: dict, system_directions: str) -> str:
+def build_system_prompt(config: dict, system_directions: str, formatting_rules: str) -> str:
     """
     Constructs the master system prompt by embedding the system_directions file verbatim,
-    then appending the valid category tags so the LLM knows exactly which keys to use.
+    appending the strict formatting rules, and adding the valid category tags.
     """
     tracks = config.get("tracks", {})
     valid_tags = list(tracks.keys())
 
     system_prompt = f"""{system_directions}
+
+---
+{formatting_rules}
 
 ---
 CATEGORY TAG CONSTRAINT:
@@ -234,9 +247,10 @@ def main():
     url = sys.argv[1]
 
     try:
-        # 1. Load config and master system directive
+        # 1. Load config and master system directives
         config = load_config()
         system_directions = load_system_directions()
+        formatting_rules = load_formatting_rules()
         tracks = config.get("tracks", {})
         global_exclusions = config.get("global_exclusions", [])
         valid_tracks = list(tracks.keys())
@@ -262,7 +276,7 @@ def main():
         # 5. LLM CLASSIFICATION: Gemini follows system_directions and returns JSON
         #    with keys: category, reporting_title, summary_markdown
         print("Sending to LLM Gateway for classification and summarization...")
-        system_prompt = build_system_prompt(config, system_directions)
+        system_prompt = build_system_prompt(config, system_directions, formatting_rules)
         llm_response = llm_gateway.generate_summary(transcript, system_prompt)
 
         # 6. Parse JSON response — strict variable mapping from the three mandated keys
