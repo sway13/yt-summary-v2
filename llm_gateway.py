@@ -50,15 +50,52 @@ def generate_summary(transcript: str, system_prompt: str) -> str:
             # When it is set, Gemini embeds literal newline characters (not \n escape
             # sequences) inside JSON string values, producing invalid JSON that
             # json.loads() rejects. Without it, Gemini properly escapes its output
-            # and the brace-extraction in parse_llm_response() handles any wrapping.
+            # and json-repair in parse_llm_response() handles any wrapping.
+            safety_settings=[
+                # BLOCK_ONLY_HIGH: only block content rated HIGH severity.
+                # The server-side foundational safety layer (CSAM, terrorism, etc.)
+                # cannot be overridden and will still apply regardless of these settings.
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+                types.SafetySetting(
+                    category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                    threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                ),
+            ],
         ),
     )
 
+    # Guard against a None text payload before calling .strip().
+    # response.text is None when the backend severs the response (e.g. server-side
+    # hardcoded safety layer for extreme content). With BLOCK_ONLY_HIGH configured,
+    # this is unlikely to be a standard content-policy block — the actual cause
+    # will be surfaced by finish_reason for debugging.
+    if response.text is None:
+        finish_reason = None
+        if response.candidates:
+            finish_reason = response.candidates[0].finish_reason
+        raise RuntimeError(
+            f"Gemini returned no text. Likely cause: safety filter block "
+            f"(finish_reason={finish_reason}). Check pipeline logs for debugging."
+        )
+
     raw = response.text.strip()
-    print(f"[llm_gateway] Raw API response (first 300 chars): {raw[:300]}")
+    print(f"[llm_gateway] Raw API response (first 300 chars): {raw[:300]}") 
 
     # Return the raw string as-is. json-repair in parse_llm_response() handles all
     # malformed JSON cleanup: markdown fences, bare newlines, unescaped quotes, etc.
     return raw
-
-
